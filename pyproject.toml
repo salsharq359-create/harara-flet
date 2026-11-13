@@ -1,0 +1,39 @@
+[project]
+name = "harara"
+version = "0.1.0"
+description = "حرارة: مراقب صادق لحرارة الجوال (Flet)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "flet>=1.1.2",
+    "flet-notifications>=1.1.2",
+    "cryptography",
+]
+
+[dependency-groups]
+dev = ["flet-cli>=1.1.2", "flet-desktop>=1.1.2", "pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.flet]
+org = "com.harara"
+product = "Harara"
+company = "Harara"
+copyright = "Harara"
+icon_background = "#132839"
+
+[tool.flet.app]
+path = "src"
+
+# أندرويد: pyjnius لقراءة الحرارة والبطارية. الإشعارات تحتاج الإذن POST_NOTIFICATIONS.
+[tool.flet.android]
+dependencies = ["pyjnius"]
+
+[tool.flet.android.permission]
+"android.permission.POST_NOTIFICATIONS" = true
+
+# آيفون: pyobjus لقراءة thermalState والبطارية.
+[tool.flet.ios]
+dependencies = ["pyobjus"]
