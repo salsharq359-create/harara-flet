@@ -25,7 +25,7 @@ def _shares(items: list) -> list:
 def top_apps(window_s: float = 3600, limit: int = 5):
     """List of AppUsage, [] if permission is missing, or None if unsupported (iPhone)."""
     plat = current_platform()
-    if plat == "ios":
+    if plat in ("ios", "windows"):
         return None
     if plat == "desktop":
         return _shares([("Game app", 23.0), ("Video player", 12.5),

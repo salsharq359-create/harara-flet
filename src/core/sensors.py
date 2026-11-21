@@ -5,15 +5,20 @@
   system thermal status (PowerManager, Android 10+).
 - iPhone: Apple gives no number, only NSProcessInfo.thermalState
   (nominal / fair / serious / critical) via Pyobjus, plus UIDevice battery info.
-- Desktop: a simulator, so the app can be developed and demoed on a laptop.
+- Windows laptop: battery % and charger from GetSystemPowerStatus (kernel32), and the
+  laptop's ACPI thermal zone from WMI when Windows shares it (often it needs admin
+  rights or is missing; then Harara says so instead of guessing).
+- Desktop (Linux/Mac, tests): a simulator for development.
 """
 import math
 import random
+import subprocess
 import time
 
 from .platform_info import android_activity, current_platform
-from .rules import (Reading, level_from_android_thermal_status,
-                    level_from_ios_thermal_state, level_from_temp, worst_level)
+from .rules import (Reading, acpi_to_c, level_from_android_thermal_status,
+                    level_from_ios_thermal_state, level_from_laptop_temp,
+                    level_from_temp, worst_level)
 
 
 class AndroidSensor:
@@ -87,6 +92,57 @@ class IOSSensor:
                        charging=battery_state in (2, 3), source=self.source)
 
 
+class WindowsSensor:
+    source = "windows"
+    THERMAL_QUERY = ("(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
+                     "-ErrorAction Stop | Measure-Object -Property CurrentTemperature -Maximum).Maximum")
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+
+        class SystemPowerStatus(ctypes.Structure):
+            _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
+                        ("BatteryLifePercent", ctypes.c_ubyte), ("SystemStatusFlag", ctypes.c_ubyte),
+                        ("BatteryLifeTime", wintypes.DWORD), ("BatteryFullLifeTime", wintypes.DWORD)]
+
+        self._ctypes = ctypes
+        self._status_type = SystemPowerStatus
+        self._kernel32 = ctypes.windll.kernel32
+        self.temp_supported = True          # becomes False after the first failed WMI read
+
+    def _power(self):
+        status = self._status_type()
+        if not self._kernel32.GetSystemPowerStatus(self._ctypes.byref(status)):
+            return None, False
+        no_battery = status.BatteryFlag == 128 or status.BatteryLifePercent == 255
+        return (None if no_battery else int(status.BatteryLifePercent)), status.ACLineStatus == 1
+
+    def _temperature(self):
+        if not self.temp_supported:
+            return None
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", self.THERMAL_QUERY],
+                capture_output=True, text=True, timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            temp = acpi_to_c(float(out.stdout.strip()))
+            if temp is None:
+                raise ValueError(out.stdout.strip())
+            return temp
+        except Exception as exc:  # noqa: BLE001  (no admin rights, no sensor, no PowerShell)
+            print(f"[harara] laptop temperature not available: {exc}")
+            self.temp_supported = False
+            return None
+
+    def read(self) -> Reading:
+        battery, plugged = self._power()
+        temp = self._temperature()
+        return Reading(timestamp=time.time(), temp_c=temp,
+                       level=level_from_laptop_temp(temp) if temp is not None else "normal",
+                       battery_pct=battery, charging=plugged, source=self.source)
+
+
 class SimulatedSensor:
     """Smooth, realistic-looking values for demos on a laptop."""
     source = "desktop"
@@ -119,6 +175,8 @@ def make_sensor():
             return AndroidSensor()
         if plat == "ios":
             return IOSSensor()
+        if plat == "windows":
+            return WindowsSensor()
     except Exception as exc:          # keep the app usable if a native call fails
         print(f"[harara] native sensor unavailable ({exc}); using simulator")
     return SimulatedSensor()

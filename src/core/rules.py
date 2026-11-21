@@ -26,6 +26,28 @@ def level_from_temp(temp_c: float) -> str:
     return NORMAL
 
 
+# Laptop thermal zone (Windows ACPI) in °C: laptops run much hotter than phone batteries.
+LAPTOP_WARM_FROM = 70.0
+LAPTOP_HOT_FROM = 85.0
+LAPTOP_CRITICAL_FROM = 95.0
+
+
+def level_from_laptop_temp(temp_c: float) -> str:
+    if temp_c >= LAPTOP_CRITICAL_FROM:
+        return CRITICAL
+    if temp_c >= LAPTOP_HOT_FROM:
+        return HOT
+    if temp_c >= LAPTOP_WARM_FROM:
+        return WARM
+    return NORMAL
+
+
+def acpi_to_c(tenths_kelvin: float):
+    """MSAcpi_ThermalZoneTemperature gives tenths of a kelvin. None if the value is not believable."""
+    c = tenths_kelvin / 10.0 - 273.15
+    return round(c, 1) if 1.0 <= c <= 130.0 else None
+
+
 def level_from_ios_thermal_state(state: int) -> str:
     """Map NSProcessInfo.thermalState (0 nominal .. 3 critical) to our levels."""
     return LEVEL_ORDER[max(0, min(3, int(state)))]
@@ -68,12 +90,12 @@ class Reading:
     level: str                    # normal / warm / hot / critical
     battery_pct: int | None
     charging: bool
-    source: str = "desktop"       # android / ios / desktop
+    source: str = "desktop"       # android / ios / windows / desktop
 
 
 def is_over_limit(reading: Reading, limit_c: float) -> bool:
     """Exact temperature when we have one, otherwise the heat level."""
-    if reading.temp_c is not None:
+    if reading.temp_c is not None and reading.source != "windows":   # laptops use their own bands
         return reading.temp_c >= limit_c
     return LEVEL_ORDER.index(reading.level) >= LEVEL_ORDER.index(HOT)
 

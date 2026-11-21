@@ -45,8 +45,21 @@ def _start_android_settings(action_name: str) -> bool:
     return True
 
 
+def _open_windows(target: str) -> bool:
+    """Windows: open a Settings page (ms-settings:...) or a program such as Task Manager."""
+    import os
+    if target.startswith("ms-settings:"):
+        os.startfile(target)          # noqa: S606  (Windows only)
+    else:
+        import subprocess
+        subprocess.Popen([target])
+    return True
+
+
 def open_power_saver_settings() -> bool:
     try:
+        if PLATFORM == "windows":
+            return _open_windows("ms-settings:batterysaver")
         if PLATFORM == "android":
             return _start_android_settings("ACTION_BATTERY_SAVER_SETTINGS")
         if PLATFORM == "ios":
@@ -58,6 +71,8 @@ def open_power_saver_settings() -> bool:
 
 def open_app_management() -> bool:
     try:
+        if PLATFORM == "windows":
+            return _open_windows("taskmgr")
         if PLATFORM == "android":
             return _start_android_settings("ACTION_APPLICATION_SETTINGS")
         if PLATFORM == "ios":
