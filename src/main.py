@@ -10,11 +10,14 @@ import traceback
 from datetime import datetime, timedelta
 
 import flet as ft
-import flet_notifications as ftn
+try:
+    import flet_notifications as ftn
+except Exception:  # noqa: BLE001  (the app still works without notifications)
+    ftn = None
 
 from core import actions, usage
 from core.platform_info import current_platform
-from core.rules import LEVEL_LABEL, LEVEL_ORDER, format_temp, suggestions_for
+from core.rules import LAPTOP_HOT_FROM, LEVEL_LABEL, LEVEL_ORDER, format_temp, suggestions_for
 from core.sensors import make_sensor
 from core.storage import Store
 from monitor import Monitor
@@ -114,6 +117,12 @@ class HararaApp:
         p.padding = 0
         p.theme = ft.Theme(color_scheme_seed=NAVY)
         p.theme_mode = ft.ThemeMode.LIGHT
+        if PLATFORM in ("windows", "desktop"):
+            try:
+                p.window.width, p.window.height = 430, 860
+                p.window.min_width = 360
+            except Exception:  # noqa: BLE001  (fake page in tests)
+                pass
         p.add(ft.SafeArea(expand=True, content=ft.Container(
             content=self.body, expand=True, padding=ft.Padding.symmetric(horizontal=20, vertical=16))))
         self.render()
@@ -265,12 +274,19 @@ class HararaApp:
                             bgcolor=TRACK, stroke_cap=ft.StrokeCap.ROUND),
             ft.Container(width=size, height=size, alignment=ft.Alignment.CENTER, content=ft.Column(
                 [txt(m.temp_text, 48 if PLATFORM != "ios" else 40, W700),
-                 txt("Battery temp" if PLATFORM != "ios" else "Heat level", 14, color=GREY),
+                 txt(self.gauge_caption(), 14, color=GREY),
                  ft.Container(content=txt(m.level_text, 14, W600, WHITE), bgcolor=color,
                               border_radius=14, padding=ft.Padding.symmetric(horizontal=12, vertical=3))],
                 alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=4)),
         ])
+
+    def gauge_caption(self) -> str:
+        if PLATFORM == "ios":
+            return "Heat level"
+        if PLATFORM == "windows":
+            return "Laptop temp" if self.m.last and self.m.last.temp_c is not None else "Not shared"
+        return "Battery temp"
 
     def home_view(self):
         m = self.m
@@ -362,7 +378,7 @@ class HararaApp:
             else:
                 hot_when, hot_val = "No data yet", ""
         else:
-            lo, hi, limit = 25, 50, m.policy.limit_c
+            lo, hi, limit = (30, 100, LAPTOP_HOT_FROM) if PLATFORM == "windows" else (25, 50, m.policy.limit_c)
             values = store.buckets(since, step, n)
             st = store.stats(since)
             stats = [("Peak", format_temp(st["peak"], m.unit, False) if st["peak"] else "--"),
@@ -436,6 +452,10 @@ class HararaApp:
 
     # ---------- نافذة السماح بالتتبع ----------
     def tracking_text(self) -> str:
+        if PLATFORM == "windows":
+            return ("Harara will record the laptop's heat and battery while you track a program you name. "
+                    "Windows does not let Harara see other programs, so you start and stop each session "
+                    "yourself. Everything stays on this laptop.")
         if PLATFORM == "ios":
             return ("Harara will record the heat level and battery while you track an app you name. "
                     "iPhone does not let Harara see other apps, so you start and stop each session "
@@ -487,7 +507,10 @@ class HararaApp:
             self.ask_tracking()
         apps = usage.top_apps()
         rows = []
-        if apps is None:
+        if apps is None and PLATFORM == "windows":
+            note = ("Windows does not tell apps how other programs use power. "
+                    "Open Task Manager › Processes to see which programs work hardest.")
+        elif apps is None:
             note = ("iPhone does not let apps see how other apps use power. "
                     "Open Settings › Battery to see the list.")
         elif not apps:
@@ -519,7 +542,8 @@ class HararaApp:
             ft.Row([pill("Stop session" if active else "Start session", self.toggle_session, bg=NAVY, height=46)]),
             txt(status, 13, color=GREY),
             *sessions,
-            ft.Row([pill("Open iPhone Settings" if ios else "Manage apps in Settings", self.manage_apps,
+            ft.Row([pill("Open iPhone Settings" if ios else "Open Task Manager" if PLATFORM == "windows"
+                         else "Manage apps in Settings", self.manage_apps,
                          outline=True, height=46)]),
         ]
 
@@ -545,7 +569,7 @@ class HararaApp:
             limit_label.update()
 
         items = []
-        if not ios:
+        if not ios and PLATFORM != "windows":
             items.append(card(ft.Column([
                 ft.Row([txt("Alert limit", 16, W600, expand=True), limit_label]),
                 ft.Slider(min=35, max=48, divisions=13, value=s.get_float("limit_c"),
@@ -577,7 +601,10 @@ class HararaApp:
             self.pass_field,
             ft.Row([pill("Export", export, bg=NAVY, height=44)]),
             status], spacing=8)))
-        note = ("On iPhone, Apple only shares a heat level (Normal, Warm, Hot, Critical), not a temperature, "
+        note = ((f"On a laptop Harara reads the temperature Windows shares (when it does) and alerts from "
+                 f"{LAPTOP_HOT_FROM:.0f}°C, because laptops run hotter than phone batteries. Harara checks "
+                 "while it is open.") if PLATFORM == "windows" else
+                "On iPhone, Apple only shares a heat level (Normal, Warm, Hot, Critical), not a temperature, "
                 "so there is no °C limit to set: Harara alerts at Hot or Critical. iPhone also pauses Harara "
                 "when you leave it, so checks and alerts happen while the app is open."
                 if ios else
@@ -605,6 +632,22 @@ class HararaApp:
         ], spacing=6))
 
 
+class NoNotifications:
+    """Used when the notifications extension is missing on this platform."""
+
+    async def show(self, *a, **kw):
+        print("notification (not shown):", kw.get("title"))
+
+    async def schedule(self, *a, **kw):
+        pass
+
+    async def cancel(self, *a, **kw):
+        pass
+
+    async def request_permissions(self):
+        return False
+
+
 def data_dir() -> str:
     path = os.environ.get("FLET_APP_STORAGE_DATA") or os.path.join(os.path.expanduser("~"), ".harara")
     os.makedirs(path, exist_ok=True)
@@ -624,7 +667,10 @@ async def main(page: ft.Page):
         store = Store(os.path.join(folder, "harara.db"))
         store.prune(30)
         monitor = Monitor(store, make_sensor(), PLATFORM, folder)
-        notifications = ftn.Notifications()
+        try:
+            notifications = ftn.Notifications() if ftn else NoNotifications()
+        except Exception:  # noqa: BLE001
+            notifications = NoNotifications()
         app = HararaApp(page, monitor, notifications)
         app.start()
         page.run_task(app.monitor_loop)

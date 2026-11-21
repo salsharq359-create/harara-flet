@@ -7,8 +7,8 @@ import time
 
 from core import packet
 from core.algorithms import RollingWindow
-from core.rules import (LEVEL_LABEL, LEVEL_ORDER, AlertPolicy, format_temp,
-                        is_over_limit, suggestions_for)
+from core.rules import (LAPTOP_HOT_FROM, LEVEL_LABEL, LEVEL_ORDER, AlertPolicy,
+                        format_temp, is_over_limit, suggestions_for)
 from core.sessions import summarize
 
 FAST_RISE_C = 5.0          # ارتفاع 5° خلال 10 دقايق = تحذير مبكر
@@ -47,6 +47,10 @@ class Monitor:
         return self.platform == "ios"
 
     @property
+    def is_windows(self) -> bool:
+        return self.platform == "windows"
+
+    @property
     def limit_text(self) -> str:
         return format_temp(self.policy.limit_c, self.unit)
 
@@ -58,9 +62,14 @@ class Monitor:
         self.store.add_reading(r)
         self.level = r.level
         self.level_text = LEVEL_LABEL[r.level]
+        no_laptop_temp = self.is_windows and r.temp_c is None
+        if no_laptop_temp:
+            self.level_text = "Unknown"         # never pretend: Windows did not share a temperature
         self.temp_text = (format_temp(r.temp_c, self.unit, False) if r.temp_c is not None
-                          else self.level_text)
-        self.gauge_frac = (min(max((r.temp_c - 25) / 25.0, 0.04), 1) if r.temp_c is not None
+                          else "--" if no_laptop_temp else self.level_text)
+        low, span = (30, 65.0) if self.is_windows else (25, 25.0)
+        self.gauge_frac = (min(max((r.temp_c - low) / span, 0.04), 1) if r.temp_c is not None
+                           else 0.0 if no_laptop_temp
                            else [0.25, 0.5, 0.75, 1.0][LEVEL_ORDER.index(r.level)])
         self.battery_text = f"{r.battery_pct}%" if r.battery_pct is not None else "--"
         self.charger_text = "Plugged" if r.charging else "Battery"
@@ -75,7 +84,10 @@ class Monitor:
         self.window.push(r.timestamp, r.temp_c)
         rise = self.window.rise()
         tips = suggestions_for(r, self.brightness_lowered)
-        if is_over_limit(r, self.policy.limit_c):
+        if no_laptop_temp:
+            self.tip_text = ("This laptop does not share its temperature with apps, so Harara shows "
+                             "battery and charger only. Running Harara as administrator may help.")
+        elif is_over_limit(r, self.policy.limit_c):
             self.tip_text = f"{tips[0].title}. {tips[0].detail}"
         elif rise is not None and rise >= FAST_RISE_C:
             self.tip_text = (f"Heating fast: +{rise:.0f}° in 10 min. "
@@ -101,7 +113,11 @@ class Monitor:
         self.store.add_alert(r)
         self.alert_big = (format_temp(r.temp_c, self.unit, False) if r.temp_c is not None
                           else LEVEL_LABEL[r.level])
-        if r.temp_c is not None:
+        if r.temp_c is not None and self.is_windows:
+            self.alert_title = f"Your laptop is hot: {format_temp(r.temp_c, self.unit)}"
+            self.alert_body = (f"Heat level {LEVEL_LABEL[r.level]} (hot from {LAPTOP_HOT_FROM:.0f}°C). "
+                               "Close heavy programs and keep the vents clear.")
+        elif r.temp_c is not None:
             self.alert_title = f"Your phone is hot: {format_temp(r.temp_c, self.unit)}"
             self.alert_body = (f"Above the safe limit ({self.limit_text}). "
                                "Open Harara for suggested actions.")
