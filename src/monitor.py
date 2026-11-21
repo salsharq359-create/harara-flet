@@ -120,6 +120,13 @@ class Monitor:
         self.store.set(key, bool(value))
         if key == "alert_while_charging":
             self.policy.alert_while_charging = bool(value)
+        if key == "tracking_allowed":
+            self.store.set("tracking_asked", True)
+            active = self.store.active_session()
+            if not value and active:            # turning tracking off ends a running session
+                r = self.sensor.read()
+                self.store.add_reading(r)
+                self.store.end_session(active[0], r)
 
     def set_unit(self, unit: str) -> None:
         self.unit = unit
@@ -136,6 +143,8 @@ class Monitor:
         name = (name or "").strip()
         if not name:
             return "Type the app name first, then start."
+        if not self.store.get_bool("tracking_allowed"):
+            return "Allow tracking first."
         r = self.sensor.read()
         self.store.add_reading(r)
         self.store.start_session(name, r)

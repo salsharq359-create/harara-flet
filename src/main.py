@@ -60,7 +60,7 @@ def card(content, bgcolor=CARD, padding=16, radius=14, **kw):
 
 def pill(text, on_click, bg=NAVY, fg=WHITE, outline=False, expand=True, height=52):
     style = ft.ButtonStyle(
-        bgcolor=None if outline else bg,
+        bgcolor=ft.Colors.TRANSPARENT if outline else bg,
         color=fg if not outline else NAVY,
         shape=ft.RoundedRectangleBorder(radius=26),
         side=ft.BorderSide(1.5, NAVY) if outline else None,
@@ -71,8 +71,11 @@ def pill(text, on_click, bg=NAVY, fg=WHITE, outline=False, expand=True, height=5
 
 
 def stat(label, value):
+    value = str(value)
+    size = 22 if len(value) <= 4 else 17 if len(value) <= 7 else 14
+    one_line = dict(max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, text_align=ft.TextAlign.CENTER)
     return card(
-        ft.Column([txt(value, 22, W700), txt(label, 13, color=GREY)],
+        ft.Column([txt(value, size, W700, **one_line), txt(label, 13, color=GREY, **one_line)],
                   spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
         padding=12, expand=True,
     )
@@ -87,6 +90,7 @@ class HararaApp:
         self.screen = "home" if self.store.get_bool("onboarded") else "welcome"
         self.log_week = False
         self.session_message = ""
+        self._consent_open = False
         self.app_name_field = ft.TextField(hint_text="App name, e.g. Game or Video", border_radius=12,
                                            bgcolor=WHITE, color=NAVY)
         self.pass_field = ft.TextField(hint_text="Passphrase (8+ characters)", password=True,
@@ -421,14 +425,66 @@ class HararaApp:
 
     # ---------- 6. التطبيقات ----------
     def toggle_session(self, e=None):
+        starting = self.store.active_session() is None
+        if starting and (self.app_name_field.value or "").strip() and not self.store.get_bool("tracking_allowed"):
+            self.ask_tracking(start_after=True)
+            return
         self.session_message = self.m.toggle_session(self.app_name_field.value)
         if self.m.store.active_session() is None:
             self.app_name_field.value = ""
         self.render()
 
+    # ---------- نافذة السماح بالتتبع ----------
+    def tracking_text(self) -> str:
+        if PLATFORM == "ios":
+            return ("Harara will record the heat level and battery while you track an app you name. "
+                    "iPhone does not let Harara see other apps, so you start and stop each session "
+                    "yourself. Everything stays on this phone.")
+        return ("Harara will read which apps were on screen in the last hour (Android “Usage access”) "
+                "and record heat and battery during sessions you start. Everything stays on this phone.")
+
+    def ask_tracking(self, start_after=False):
+        if self._consent_open:
+            return
+        self._consent_open = True
+
+        def answer(allowed):
+            def handler(e):
+                self._consent_open = False
+                self.page.pop_dialog()
+                self.answer_tracking(allowed, start_after)
+            return handler
+
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True,
+            bgcolor=WHITE,
+            title=txt("Allow Harara to track app sessions?", 18, W700),
+            content=txt(self.tracking_text(), 14, color=GREY),
+            actions=[ft.TextButton("Not now", on_click=answer(False)),
+                     ft.FilledButton("Allow", on_click=answer(True),
+                                     style=ft.ButtonStyle(bgcolor=NAVY, color=WHITE))],
+            actions_alignment=ft.MainAxisAlignment.END,
+        ))
+
+    def answer_tracking(self, allowed: bool, start_after: bool = False):
+        self.m.set_setting("tracking_allowed", allowed)
+        if not allowed:
+            self.session_message = "Tracking is off. You can turn it on in Settings."
+            self.render()
+            return
+        if PLATFORM == "android" and usage.top_apps() == []:
+            actions.open_usage_access_settings()        # Android's own switch for Usage access
+        if start_after:
+            self.toggle_session()
+        else:
+            self.session_message = "Tracking allowed."
+            self.render()
+
     def apps_view(self):
         m = self.m
         ios = PLATFORM == "ios"
+        if not self.store.get_bool("tracking_asked"):
+            self.ask_tracking()
         apps = usage.top_apps()
         rows = []
         if apps is None:
@@ -458,8 +514,7 @@ class HararaApp:
             txt(note, 14, color=GREY),
             *rows,
             txt("Track an app", 17, W700),
-            txt("Start, use the app, then stop. Harara records heat and battery during it. "
-                "iPhone Shortcuts: open harara://start?app=Name or harara://stop.", 13, color=GREY),
+            txt("Start, use the app, then stop. Harara records heat and battery during it.", 13, color=GREY),
             self.app_name_field,
             ft.Row([pill("Stop session" if active else "Start session", self.toggle_session, bg=NAVY, height=46)]),
             txt(status, 13, color=GREY),
@@ -499,6 +554,7 @@ class HararaApp:
             *([switch_row("Auto-lower brightness when hot", "auto_brightness")] if PLATFORM == "android" else []),
             switch_row("Alert while charging", "alert_while_charging"),
             switch_row("Weekly report", "weekly_report", self.schedule_weekly),
+            switch_row("Track app sessions", "tracking_allowed"),
         ], spacing=6)))
         if not ios:
             def unit_changed(e):
@@ -528,7 +584,25 @@ class HararaApp:
                 "Harara checks and alerts while the app is open. When you leave the app, the phone may pause it, "
                 "so keep Harara open while you game or charge. On iPhone, Apple only shares a heat level "
                 "(Normal, Warm, Hot, Critical), so alerts use that level instead of a number.")
+        if ios:
+            items.append(self.shortcuts_card())
         return [txt("Settings", 22, W700), *items, txt(note, 12, color=GREY)]
+
+    def shortcuts_card(self):
+        """iPhone: Apple's Shortcuts app can open Harara at the moments phones heat up."""
+        steps = [
+            "Open the Shortcuts app › Automation › +.",
+            "Choose Charger › Is Connected (or Battery Level › Falls Below 20%).",
+            "Choose Run Immediately, then add the action Open App › Harara.",
+        ]
+        return card(ft.Column([
+            txt("Open Harara automatically", 16, W600),
+            txt("iPhone pauses Harara when you leave it. A Shortcuts automation can open it "
+                "for you when you plug in the charger, when the phone often gets hot.", 13, color=GREY),
+            *[ft.Row([txt(f"{i}.", 13, W600, width=18), txt(step, 13, expand=True)],
+                     vertical_alignment=ft.CrossAxisAlignment.START)
+              for i, step in enumerate(steps, 1)],
+        ], spacing=6))
 
 
 def data_dir() -> str:
