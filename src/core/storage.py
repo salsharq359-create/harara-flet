@@ -12,6 +12,8 @@ DEFAULT_SETTINGS = {
     "alert_while_charging": "1",
     "weekly_report": "0",
     "unit": "C",
+    "tracking_asked": "0",      # Harara's permission window was answered once
+    "tracking_allowed": "0",    # the user allowed app-session tracking
 }
 
 
